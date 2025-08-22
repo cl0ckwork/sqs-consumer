@@ -2469,4 +2469,160 @@ describe("Consumer", () => {
       );
     });
   });
+
+  describe("fastq integration", () => {
+    it("creates a consumer with fastq enabled", () => {
+      consumer = new Consumer({
+        queueUrl: QUEUE_URL,
+        region: REGION,
+        handleMessage,
+        sqs,
+        processConcurrentMessages: true,
+        concurrency: 2,
+      });
+
+      assert.equal(consumer.processConcurrentMessages, true);
+      assert.equal(consumer.concurrency, 2);
+      assert(consumer.messageQueue);
+    });
+
+    it("validates that concurrency is required when processConcurrentMessages is true", () => {
+      assert.throws(() => {
+        // @ts-expect-error Testing validation error - concurrency required when processConcurrentMessages is true
+        new Consumer({
+          queueUrl: QUEUE_URL,
+          region: REGION,
+          handleMessage,
+          sqs,
+          processConcurrentMessages: true,
+        });
+      }, "concurrency must be specified when processConcurrentMessages is true.");
+    });
+
+    it("validates that processConcurrentMessages is required when concurrency is specified", () => {
+      assert.throws(() => {
+        // @ts-expect-error Testing validation error - processConcurrentMessages required when concurrency is specified
+        new Consumer({
+          queueUrl: QUEUE_URL,
+          region: REGION,
+          handleMessage,
+          sqs,
+          concurrency: 2,
+        });
+      }, "processConcurrentMessages must be true when concurrency is specified.");
+    });
+
+    it("validates that concurrency must be greater than 0", () => {
+      assert.throws(() => {
+        new Consumer({
+          queueUrl: QUEUE_URL,
+          region: REGION,
+          handleMessage,
+          sqs,
+          processConcurrentMessages: true,
+          concurrency: 0,
+        });
+      }, "concurrency must be greater than 0.");
+    });
+
+    it("processes messages using fastq queue when enabled", async () => {
+      consumer = new Consumer({
+        queueUrl: QUEUE_URL,
+        region: REGION,
+        handleMessage,
+        sqs,
+        processConcurrentMessages: true,
+        concurrency: 2,
+        authenticationErrorTimeout: AUTHENTICATION_ERROR_TIMEOUT,
+        pollingWaitTimeMs: POLLING_TIMEOUT,
+      });
+
+      const messageReceivedListener = sandbox.stub();
+      consumer.on("message_received", messageReceivedListener);
+
+      consumer.start();
+      await pEvent(consumer, "message_processed");
+      consumer.stop();
+
+      sandbox.assert.calledWith(messageReceivedListener, response.Messages[0]);
+      sandbox.assert.calledOnce(handleMessage);
+    });
+
+    it("updates concurrency option for fastq-enabled consumer", () => {
+      consumer = new Consumer({
+        queueUrl: QUEUE_URL,
+        region: REGION,
+        handleMessage,
+        sqs,
+        processConcurrentMessages: true,
+        concurrency: 1,
+      });
+
+      const optionUpdatedListener = sandbox.stub();
+      consumer.on("option_updated", optionUpdatedListener);
+
+      consumer.updateOption("concurrency", 3);
+
+      assert.equal(consumer.concurrency, 3);
+      sandbox.assert.calledWithMatch(
+        optionUpdatedListener,
+        "concurrency",
+        3,
+      );
+    });
+
+    it("does not allow updating concurrency on non-fastq consumer", () => {
+      consumer = new Consumer({
+        queueUrl: QUEUE_URL,
+        region: REGION,
+        handleMessage,
+        sqs,
+      });
+
+      const optionUpdatedListener = sandbox.stub();
+      consumer.on("option_updated", optionUpdatedListener);
+
+      assert.throws(() => {
+        consumer.updateOption("concurrency", 2);
+      }, "concurrency can only be set when processConcurrentMessages is true.");
+
+      sandbox.assert.notCalled(optionUpdatedListener);
+    });
+
+    it("properly stops and kills fastq queue on abort", () => {
+      consumer = new Consumer({
+        queueUrl: QUEUE_URL,
+        region: REGION,
+        handleMessage,
+        sqs,
+        processConcurrentMessages: true,
+        concurrency: 2,
+      });
+
+      const killSpy = sandbox.spy(consumer.messageQueue, 'kill');
+      
+      consumer.start();
+      consumer.stop({ abort: true });
+
+      sandbox.assert.calledOnce(killSpy);
+    });
+
+    it("properly pauses fastq queue on graceful stop", () => {
+      consumer = new Consumer({
+        queueUrl: QUEUE_URL,
+        region: REGION,
+        handleMessage,
+        sqs,
+        processConcurrentMessages: true,
+        concurrency: 2,
+      });
+
+      const pauseSpy = sandbox.spy(consumer.messageQueue, 'pause');
+      
+      consumer.start();
+      consumer.stop();
+
+      sandbox.assert.calledOnce(pauseSpy);
+    });
+  });
 });

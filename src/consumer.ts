@@ -18,11 +18,15 @@ import {
   MessageSystemAttributeName,
 } from "@aws-sdk/client-sqs";
 
+import * as fastq from "fastq";
+import type { queueAsPromised } from "fastq";
+
 import type {
   ConsumerOptions,
   StopOptions,
   UpdatableOptions,
 } from "./types.js";
+import { isFastqConsumerOptions } from "./types.js";
 import { TypedEventEmitter } from "./emitter.js";
 import {
   SQSError,
@@ -70,6 +74,11 @@ export class Consumer extends TypedEventEmitter {
   private stopRequestedAtTimestamp: number;
   public abortController: AbortController;
   private extendedAWSErrors: boolean;
+  
+  // Fastq-specific properties - initialized based on configuration
+  private messageQueue: queueAsPromised<Message, void> | null = null;
+  public concurrency: number | null = null;
+  public processConcurrentMessages: boolean;
 
   constructor(options: ConsumerOptions) {
     super(options.queueUrl);
@@ -105,6 +114,19 @@ export class Consumer extends TypedEventEmitter {
         useQueueUrlAsEndpoint: options.useQueueUrlAsEndpoint ?? true,
         region: options.region || process.env.AWS_REGION || "eu-west-1",
       });
+      
+    // Initialize fastq properties based on options type
+    if (isFastqConsumerOptions(options)) {
+      // Type-safe: we know concurrency exists
+      this.processConcurrentMessages = true;
+      this.concurrency = options.concurrency;
+      this.messageQueue = fastq.promise(this.processMessageWorker.bind(this), options.concurrency);
+    } else {
+      // Legacy mode
+      this.processConcurrentMessages = false;
+      this.concurrency = null;
+      this.messageQueue = null;
+    }
   }
 
   /**
@@ -126,6 +148,12 @@ export class Consumer extends TypedEventEmitter {
       }
       // Create a new abort controller each time the consumer is started
       this.abortController = new AbortController();
+      
+      // Resume the internal message queue if it exists and was paused
+      if (this.isFastqMode()) {
+        this.getMessageQueue().resume();
+      }
+      
       logger.debug("starting");
       this.stopped = false;
       this.emit("started");
@@ -159,6 +187,18 @@ export class Consumer extends TypedEventEmitter {
     if (this.pollingTimeoutId) {
       clearTimeout(this.pollingTimeoutId);
       this.pollingTimeoutId = undefined;
+    }
+
+    // Stop the internal message queue if it exists
+    if (this.isFastqMode()) {
+      const queue = this.getMessageQueue();
+      if (options?.abort) {
+        // Kill all pending tasks immediately
+        queue.kill();
+      } else {
+        // Pause to prevent new tasks, but let existing tasks complete
+        queue.pause();
+      }
     }
 
     if (options?.abort) {
@@ -209,7 +249,74 @@ export class Consumer extends TypedEventEmitter {
   }
 
   /**
+   * Gracefully updates concurrency by draining the current queue first.
+   * This prevents message loss by allowing all pending messages to start processing.
+   * 
+   * @param newConcurrency The new concurrency value
+   * @param options Options for the graceful update
+   */
+  public async updateConcurrencyGracefully(
+    newConcurrency: number, 
+    options: { 
+      drainTimeout?: number; // Max time to wait for queue to drain (default: 30s)
+      pausePolling?: boolean; // Whether to pause polling during update (default: true)
+    } = {}
+  ): Promise<void> {
+    if (!this.isFastqMode()) {
+      throw new Error("Graceful concurrency updates only available when processConcurrentMessages is true");
+    }
+
+    const { drainTimeout = 30000, pausePolling = true } = options;
+    const currentQueue = this.getMessageQueue();
+    
+    // 1. Pause polling to prevent new messages
+    const wasPolling = this.isPolling;
+    if (pausePolling && wasPolling) {
+      this.stop({ abort: false });
+      // Wait for current poll cycle to complete
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    try {
+      // 2. Pause the queue to prevent new tasks from being processed
+      currentQueue.pause();
+      
+      // 3. Wait for queue to drain (all pending tasks to start)
+      const drainStartTime = Date.now();
+      while (!currentQueue.idle() && (Date.now() - drainStartTime) < drainTimeout) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      
+      // 4. Update the concurrency
+      currentQueue.kill(); // Now safe to kill as queue is drained
+      this.concurrency = newConcurrency;
+      this.messageQueue = fastq.promise(this.processMessageWorker.bind(this), newConcurrency);
+      
+      // 5. Resume processing
+      if (wasPolling && pausePolling) {
+        this.start();
+      } else if (!pausePolling) {
+        this.getMessageQueue().resume();
+      }
+      
+      this.emit("option_updated", "concurrency", newConcurrency);
+      
+    } catch (error) {
+      // Restore original state if something goes wrong
+      if (wasPolling && pausePolling) {
+        this.start();
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Validates and then updates the provided option to the provided value.
+   * 
+   * ⚠️ **Important**: When updating `concurrency` on a fastq-enabled consumer,
+   * this method immediately recreates the internal queue. For graceful updates
+   * that drain pending messages first, use `updateConcurrencyGracefully()` instead.
+   * 
    * @param option The option to validate and then update
    * @param value The value to set the provided option to
    */
@@ -219,7 +326,24 @@ export class Consumer extends TypedEventEmitter {
   ): void {
     validateOption(option, value, this, true);
 
-    this[option] = value;
+    // Special handling for concurrency changes
+    if (option === "concurrency" && this.isFastqMode()) {
+      const newConcurrency = value as number;
+      const currentQueue = this.getMessageQueue();
+      
+      // Immediate update - kills pending messages
+      const wasRunning = !currentQueue.idle();
+      currentQueue.kill(); // Stop current queue immediately
+      
+      this.concurrency = newConcurrency;
+      this.messageQueue = fastq.promise(this.processMessageWorker.bind(this), newConcurrency);
+      
+      if (wasRunning) {
+        this.getMessageQueue().resume();
+      }
+    } else {
+      this[option] = value;
+    }
 
     this.emit("option_updated", option, value);
   }
@@ -330,6 +454,34 @@ export class Consumer extends TypedEventEmitter {
   }
 
   /**
+   * Type guard to check if this consumer instance is using fastq mode.
+   * When this returns true, messageQueue and concurrency are guaranteed to be non-null.
+   */
+  private isFastqMode(): boolean {
+    return this.processConcurrentMessages === true;
+  }
+
+  /**
+   * Get the fastq message queue, throwing an error if not in fastq mode.
+   */
+  private getMessageQueue(): queueAsPromised<Message, void> {
+    if (!this.isFastqMode() || !this.messageQueue) {
+      throw new Error("Consumer is not in fastq mode");
+    }
+    return this.messageQueue;
+  }
+
+
+  /**
+   * Worker function for fastq queue that processes individual messages.
+   * This is used when processConcurrentMessages is enabled.
+   * @param message The message to process
+   */
+  private async processMessageWorker(message: Message): Promise<void> {
+    return this.processMessage(message);
+  }
+
+  /**
    * Handles the response from AWS SQS, determining if we should proceed to
    * the message handler.
    * @param response The output from AWS SQS
@@ -340,7 +492,16 @@ export class Consumer extends TypedEventEmitter {
     if (hasMessages(response)) {
       if (this.handleMessageBatch) {
         await this.processMessageBatch(response.Messages);
+      } else if (this.isFastqMode()) {
+        // Use fastq for controlled concurrency
+        const queue = this.getMessageQueue();
+        await Promise.all(
+          response.Messages.map((message: Message) =>
+            queue.push(message),
+          ),
+        );
       } else {
+        // Legacy mode: use Promise.all for backward compatibility
         await Promise.all(
           response.Messages.map((message: Message) =>
             this.processMessage(message),

@@ -6,9 +6,9 @@ import {
 } from "@aws-sdk/client-sqs";
 
 /**
- * The options for the consumer.
+ * Base consumer options shared by both legacy and fastq modes.
  */
-export interface ConsumerOptions {
+interface BaseConsumerOptions {
   /**
    * The SQS queue URL.
    */
@@ -170,13 +170,58 @@ export interface ConsumerOptions {
 }
 
 /**
+ * Consumer options for legacy mode using Promise.all() for concurrency.
+ */
+interface LegacyConsumerOptions extends BaseConsumerOptions {
+  /**
+   * Legacy mode - uses Promise.all() for concurrent processing.
+   * @defaultvalue `false`
+   */
+  processConcurrentMessages?: false;
+  /**
+   * Not applicable in legacy mode.
+   */
+  concurrency?: never;
+}
+
+/**
+ * Consumer options for fastq mode with controlled concurrency.
+ */
+interface FastqConsumerOptions extends BaseConsumerOptions {
+  /**
+   * Enable controlled concurrent message processing using fastq.
+   * When true, messages are processed with precise concurrency control.
+   * @defaultvalue `true` (when using this interface)
+   */
+  processConcurrentMessages: true;
+  /**
+   * The number of concurrent message handlers that can run at the same time.
+   * Required when processConcurrentMessages is true.
+   */
+  concurrency: number;
+}
+
+/**
+ * The options for the consumer - union of legacy and fastq modes.
+ */
+export type ConsumerOptions = LegacyConsumerOptions | FastqConsumerOptions;
+
+/**
+ * Type guard to check if consumer options are for fastq mode.
+ */
+export function isFastqConsumerOptions(options: ConsumerOptions): options is FastqConsumerOptions {
+  return options.processConcurrentMessages === true;
+}
+
+/**
  * A subset of the ConsumerOptions that can be updated at runtime.
  */
 export type UpdatableOptions =
   | "visibilityTimeout"
   | "batchSize"
   | "waitTimeSeconds"
-  | "pollingWaitTimeMs";
+  | "pollingWaitTimeMs"
+  | "concurrency";
 
 /**
  * The options for the stop method.

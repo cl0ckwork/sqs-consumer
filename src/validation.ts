@@ -50,6 +50,19 @@ function validateOption(
         throw new Error("pollingWaitTimeMs must be greater than 0.");
       }
       break;
+    case "concurrency":
+      if (value < 1) {
+        throw new Error("concurrency must be greater than 0.");
+      }
+      if (!allOptions.processConcurrentMessages) {
+        // Use different error messages for strict vs non-strict modes
+        if (strict) {
+          throw new Error("concurrency can only be set when processConcurrentMessages is true.");
+        } else {
+          throw new Error("processConcurrentMessages must be true when concurrency is specified.");
+        }
+      }
+      break;
     default:
       if (strict) {
         throw new Error(`The update ${option} cannot be updated`);
@@ -77,6 +90,17 @@ function assertOptions(options: ConsumerOptions): void {
   }
   if (options.heartbeatInterval) {
     validateOption("heartbeatInterval", options.heartbeatInterval, options);
+  }
+  if (options.concurrency !== undefined) {
+    validateOption("concurrency", options.concurrency, options);
+  }
+  
+  // Validate that processConcurrentMessages and concurrency are used together
+  if (options.processConcurrentMessages && !options.concurrency) {
+    throw new Error("concurrency must be specified when processConcurrentMessages is true.");
+  }
+  if (!options.processConcurrentMessages && options.concurrency !== undefined) {
+    throw new Error("processConcurrentMessages must be true when concurrency is specified.");
   }
 }
 

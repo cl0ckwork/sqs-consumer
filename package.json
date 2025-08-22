@@ -181,7 +181,8 @@
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "^3.806.0",
-    "debug": "^4.4.0"
+    "debug": "^4.4.0",
+    "fastq": "^1.19.1"
   },
   "peerDependencies": {
     "@aws-sdk/client-sqs": "^3.806.0"
