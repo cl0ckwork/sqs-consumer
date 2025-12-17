@@ -54,16 +54,17 @@ Given("Several messages are sent to the SQS queue", async () => {
   
   while (size2 !== 3 && attempts < maxAttempts) {
     size2 = await producer.queueSize();
-    if (size2 === 3) break;
-    
+    if (size2 === 3) {
+      break;
+    }
+
     attempts++;
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
-  
+
   // Due to LocalStack limitations, we allow for some message loss but require at least 1 message
   if (size2 >= 1) {
     actualMessageCount = size2; // Track the actual number for later assertions
-    console.log(`LocalStack delivered ${size2}/3 messages (minimum 1 required for graceful shutdown test)`);
   } else {
     strictEqual(size2, 3, `Expected at least 1 message in queue, but found ${size2} after ${attempts} attempts. LocalStack appears to be dropping all messages.`);
   }

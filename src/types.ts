@@ -199,6 +199,12 @@ interface FastqConsumerOptions extends BaseConsumerOptions {
    * Required when processConcurrentMessages is true.
    */
   concurrency: number;
+  /**
+   * The maximum number of messages that can be in-flight (being processed) at once.
+   * This enables continuous polling - new messages are fetched when in-flight count drops below this limit.
+   * @defaultvalue `concurrency * 3` (keeps the queue well-fed)
+   */
+  maxInFlightMessages?: number;
 }
 
 /**

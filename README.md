@@ -62,8 +62,8 @@ app.start();
 
 - The queue is polled continuously for messages using [long polling](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-long-polling.html).
 - Throwing an error (or returning a rejected promise) from the handler function will cause the message to be left on the queue. An [SQS redrive policy](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/SQSDeadLetterQueue.html) can be used to move messages that cannot be processed to a dead letter queue.
-- By default messages are processed one at a time – a new message won't be received until the first one has been processed. To process messages in parallel, you have two options:
-  - **Legacy Mode**: Use the `batchSize` option [detailed here](https://bbc.github.io/sqs-consumer/interfaces/ConsumerOptions.html#batchSize)
+- By default messages are processed one at a time – a new message won't be received until the first one has been processed. To process messages concurrently, you have two options:
+  - **Legacy Mode**: Use `batchSize` with `handleMessage` (Promise.all) or `handleMessageBatch` (batch processing) [detailed here](https://bbc.github.io/sqs-consumer/interfaces/ConsumerOptions.html#batchSize)
   - **FastQ Mode** (Recommended): Use `processConcurrentMessages: true` and `concurrency` for controlled concurrent processing (see [Concurrent Message Processing](#concurrent-message-processing) section below)
   - It's also important to await any processing that you are doing to ensure that messages are processed one at a time.
 - By default, messages that are sent to the `handleMessage` and `handleMessageBatch` functions will be considered as processed if they return without an error.
@@ -89,18 +89,36 @@ const app = Consumer.create({
   },
   processConcurrentMessages: true,  // Enable fastq processing
   concurrency: 5,          // Process max 5 messages simultaneously
-  batchSize: 10,          // Fetch up to 10 messages, but process with controlled concurrency
+  // batchSize defaults to 10 (SQS max) when processConcurrentMessages is true
+  // This keeps the internal queue topped off for optimal throughput
 });
 
 app.start();
 ```
 
+**📝 Note**: When `processConcurrentMessages` is enabled, `batchSize` automatically defaults to **10** (the SQS maximum) to ensure the internal fastq queue stays well-fed for optimal throughput. You can override this by explicitly setting `batchSize` to a lower value if desired.
+
 #### Key Benefits of FastQ Mode
 
 - **Controlled Concurrency**: Precisely limit how many messages process simultaneously
 - **High Performance**: Built on [fastq](https://www.npmjs.com/package/fastq), faster than Promise.all()
-- **Immediate Processing**: New messages start as soon as others complete (no waiting for entire batch)
+- **Continuous Polling**: New messages are fetched while others are being processed (no batch boundaries)
 - **Runtime Updates**: Change concurrency on-the-fly without restarting
+- **Optimized Batching**: Automatically fetches 10 messages per poll to keep the queue full
+
+#### How Continuous Polling Works
+
+FastQ mode enables continuous polling, which means new messages are fetched from SQS while previous messages are still being processed:
+
+```js
+// With concurrency: 5 and maxInFlightMessages: 15 (default: concurrency * 3)
+// Timeline:
+// 0s: Fetch 10 messages, start processing 5 (queue: 5 waiting)
+// 1s: Continue processing, fetch 10 more (queue: well-fed)
+// 2s: Messages complete, new ones start immediately (smooth throughput)
+```
+
+This eliminates the "wave" pattern seen in batch processing and maximizes throughput. The `maxInFlightMessages` option (default: `concurrency * 3`) controls how many messages can be queued + processing at once, preventing unbounded memory growth.
 
 #### Runtime Concurrency Updates
 
@@ -155,15 +173,26 @@ setTimeout(() => {
 
 #### Legacy vs FastQ Comparison
 
-**Legacy Mode (Promise.all)**:
+**Legacy Mode - Individual Messages (Promise.all)**:
 ```js
 const app = Consumer.create({
   queueUrl: "...",
-  handleMessage: async (message) => { /* process */ },
-  batchSize: 5, // All 5 messages start simultaneously
+  handleMessage: async (message) => { /* process each individually */ },
+  batchSize: 5, // Fetches 5, processes with Promise.all()
 });
-// ❌ If one message takes 30s, others wait
+// ❌ All 5 start simultaneously, wait for slowest to complete
 // ❌ No granular concurrency control
+```
+
+**Legacy Mode - Batch Processing**:
+```js
+const app = Consumer.create({
+  queueUrl: "...",
+  handleMessageBatch: async (messages) => { /* process batch together */ },
+  batchSize: 5, // Fetches and processes 5 as a single batch
+});
+// ❌ Entire batch waits for completion before next poll
+// ❌ No concurrent processing within batch
 ```
 
 **FastQ Mode (Recommended)**:
@@ -179,6 +208,28 @@ const app = Consumer.create({
 // ✅ Consistent resource utilization
 // ✅ Better throughput for mixed processing times
 ```
+
+#### Advanced FastQ Configuration
+
+For fine-tuned control over continuous polling behavior:
+
+```js
+const app = Consumer.create({
+  queueUrl: "...",
+  handleMessage: async (message) => { /* process */ },
+  processConcurrentMessages: true,
+  concurrency: 5,
+  maxInFlightMessages: 20,  // Optional: defaults to concurrency * 3
+  // Controls max messages in queue + processing
+  // Higher = more throughput, more memory
+  // Lower = less memory, potential starvation
+});
+```
+
+**When to adjust `maxInFlightMessages`:**
+- **High throughput, fast processing**: Increase to `concurrency * 5` to keep queue full
+- **Memory constrained, slow processing**: Decrease to `concurrency * 2` to limit queued messages
+- **Default (`concurrency * 3`)**: Good balance for most use cases
 
 #### Migration from Legacy Mode
 
@@ -197,8 +248,8 @@ const app = Consumer.create({
   queueUrl: "...",
   handleMessage: async (message) => { /* process */ },
   processConcurrentMessages: true,  // Add this
-  concurrency: 5,          // Add this (replace batchSize for concurrency control)
-  batchSize: 10           // Optional: fetch more messages for better throughput
+  concurrency: 5,          // Add this (controls concurrent processing)
+  // batchSize automatically defaults to 10 (SQS max) for optimal throughput
 });
 ```
 

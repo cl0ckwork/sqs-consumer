@@ -79,6 +79,8 @@ export class Consumer extends TypedEventEmitter {
   private messageQueue: queueAsPromised<Message, void> | null = null;
   public concurrency: number | null = null;
   public processConcurrentMessages: boolean;
+  private maxInFlightMessages: number = 0;
+  private inFlightMessages: number = 0;
 
   constructor(options: ConsumerOptions) {
     super(options.queueUrl);
@@ -95,7 +97,9 @@ export class Consumer extends TypedEventEmitter {
     this.messageAttributeNames = options.messageAttributeNames || [];
     this.messageSystemAttributeNames =
       options.messageSystemAttributeNames || [];
-    this.batchSize = options.batchSize || 1;
+    // Default batchSize to 10 for fastq mode (SQS max) to keep queue topped off
+    // Legacy mode defaults to 1 for backward compatibility
+    this.batchSize = options.batchSize || (isFastqConsumerOptions(options) ? 10 : 1);
     this.visibilityTimeout = options.visibilityTimeout;
     this.terminateVisibilityTimeout =
       options.terminateVisibilityTimeout || false;
@@ -120,11 +124,13 @@ export class Consumer extends TypedEventEmitter {
       // Type-safe: we know concurrency exists
       this.processConcurrentMessages = true;
       this.concurrency = options.concurrency;
+      this.maxInFlightMessages = options.maxInFlightMessages || (options.concurrency * 3);
       this.messageQueue = fastq.promise(this.processMessageWorker.bind(this), options.concurrency);
     } else {
       // Legacy mode
       this.processConcurrentMessages = false;
       this.concurrency = null;
+      this.maxInFlightMessages = 0;
       this.messageQueue = null;
     }
   }
@@ -377,6 +383,23 @@ export class Consumer extends TypedEventEmitter {
       return;
     }
 
+    // In fastq mode, check if we have capacity before polling
+    if (this.isFastqMode() && this.inFlightMessages >= this.maxInFlightMessages) {
+      logger.debug("poll_deferred", {
+        detail: `At capacity (${this.inFlightMessages}/${this.maxInFlightMessages}), deferring poll...`,
+      });
+
+      // Schedule next poll check
+      if (this.pollingTimeoutId) {
+        clearTimeout(this.pollingTimeoutId);
+      }
+      this.pollingTimeoutId = setTimeout(
+        () => this.poll(),
+        this.pollingWaitTimeMs,
+      );
+      return;
+    }
+
     logger.debug("polling");
 
     this.isPolling = true;
@@ -493,13 +516,19 @@ export class Consumer extends TypedEventEmitter {
       if (this.handleMessageBatch) {
         await this.processMessageBatch(response.Messages);
       } else if (this.isFastqMode()) {
-        // Use fastq for controlled concurrency
+        // Use fastq for controlled concurrency with continuous polling
         const queue = this.getMessageQueue();
-        await Promise.all(
-          response.Messages.map((message: Message) =>
-            queue.push(message),
-          ),
-        );
+
+        // Push messages to queue without awaiting - enables continuous polling
+        response.Messages.forEach((message: Message) => {
+          this.inFlightMessages++;
+          queue.push(message).finally(() => {
+            this.inFlightMessages--;
+          });
+        });
+
+        // Note: We don't await processing completion to enable continuous polling
+        // The queue will process messages concurrently while we fetch more
       } else {
         // Legacy mode: use Promise.all for backward compatibility
         await Promise.all(

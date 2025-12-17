@@ -27,3 +27,9 @@ Feature: FastQ concurrent message processing
     When the consumer without fastq options processes the messages
     Then all messages should be consumed without error
     And processing should use legacy Promise.all approach
+
+  Scenario: FastQ mode enables continuous polling for high throughput
+    Given 10 messages are sent to the SQS queue
+    When the consumer with concurrency 3 processes messages continuously
+    Then the consumer should process messages without error
+    And messages should be processed with continuous polling behavior

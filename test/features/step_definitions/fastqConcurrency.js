@@ -3,13 +3,15 @@ import { strictEqual, ok } from "node:assert";
 import { PurgeQueueCommand } from "@aws-sdk/client-sqs";
 import { pEvent } from "p-event";
 
-import { 
-  fastqConsumer, 
+import {
+  fastqConsumer,
   legacyConsumer,
   createErrorConsumer,
+  continuousPollingConsumer,
   processedMessages,
   maxConcurrentProcessing,
-  resetCounters 
+  pollTimestamps,
+  resetCounters
 } from "../utils/consumer/fastqConcurrency.js";
 import { producer } from "../utils/producer.js";
 import { sqs, QUEUE_URL } from "../utils/sqs.js";
@@ -65,17 +67,19 @@ Given("{int} messages are sent to the SQS queue", async (messageCount) => {
   
   while (size !== messageCount && attempts < maxAttempts) {
     size = await producer.queueSize();
-    if (size === messageCount) break;
-    
+    if (size === messageCount) {
+      break;
+    }
+
     attempts++;
     await delay(200); // Shorter delays to avoid timeout
   }
-  
+
   // Due to LocalStack limitations, we allow for some message loss but require at least 50% success
   const minRequired = Math.max(1, Math.floor(messageCount * 0.5));
-  
+
   if (size >= minRequired) {
-    console.log(`LocalStack delivered ${size}/${messageCount} messages (minimum ${minRequired} required)`);
+    // LocalStack delivered enough messages for testing
     // Update testMessages array to match what we actually have for test consistency
     testMessages = testMessages.slice(0, size);
   } else {
@@ -94,16 +98,16 @@ When("the consumer with concurrency {int} processes the messages", { timeout: 15
     currentConsumer = fastqConsumer(concurrency);
   }
   currentConsumer.start();
-  
+
   strictEqual(currentConsumer.status.isRunning, true);
-  
-  // Wait for all messages to be processed or error handling to complete
+
+  // Wait for all messages to be processed by tracking message_processed events
   const messageCount = testMessages.length;
   let processedCount = 0;
-  
+
   while (processedCount < messageCount) {
     try {
-      await pEvent(currentConsumer, "response_processed", { timeout: 10000 });
+      await pEvent(currentConsumer, "message_processed", { timeout: 10000 });
       processedCount++;
     } catch (error) {
       if (error.name === 'TimeoutError') {
@@ -116,7 +120,7 @@ When("the consumer with concurrency {int} processes the messages", { timeout: 15
       break;
     }
   }
-  
+
   // Give a moment for any remaining processing
   await delay(100);
 });
@@ -133,18 +137,18 @@ When("the consumer starts with concurrency {int}", async (initialConcurrency) =>
 
 When("the concurrency is updated to {int} during processing", { timeout: 15000 }, async (newConcurrency) => {
   ok(currentConsumer, "Consumer should be running");
-  
+
   // Update concurrency
   currentConsumer.updateOption("concurrency", newConcurrency);
   strictEqual(currentConsumer.concurrency, newConcurrency);
-  
-  // Wait for all messages to be processed
+
+  // Wait for all messages to be processed by tracking message_processed events
   const messageCount = testMessages.length;
   let processedCount = 0;
-  
+
   while (processedCount < messageCount) {
     try {
-      await pEvent(currentConsumer, "response_processed", { timeout: 8000 });
+      await pEvent(currentConsumer, "message_processed", { timeout: 8000 });
       processedCount++;
     } catch (error) {
       if (error.name === 'TimeoutError') {
@@ -278,4 +282,69 @@ Then("processing should use legacy Promise.all approach", () => {
   // Verify legacy consumer properties
   strictEqual(currentConsumer.processConcurrentMessages, false, "Should not use concurrent message processing");
   strictEqual(currentConsumer.concurrency, null, "Concurrency should be null in legacy mode");
+});
+
+When("the consumer with concurrency {int} processes messages continuously", { timeout: 20000 }, async (concurrency) => {
+  currentConsumer = continuousPollingConsumer(concurrency);
+  currentConsumer.start();
+
+  strictEqual(currentConsumer.status.isRunning, true);
+
+  // Wait for messages to be processed - minimum 50% (LocalStack can be unreliable)
+  const messageCount = testMessages.length;
+  const minRequired = Math.ceil(messageCount * 0.5);
+  let processedCount = 0;
+  const maxWaitTime = 15000;
+  const startTime = Date.now();
+
+  while (processedCount < messageCount && (Date.now() - startTime) < maxWaitTime) {
+    try {
+      await pEvent(currentConsumer, "message_processed", { timeout: 2000 });
+      processedCount++;
+    } catch (error) {
+      if (error.name === 'TimeoutError') {
+        // If we've processed minimum required and no new messages for 2s, consider it done
+        if (processedCount >= minRequired) {
+          break;
+        }
+        if (processedCount > 0) {
+          await delay(300);
+          continue;
+        }
+      }
+      break;
+    }
+  }
+
+  ok(processedCount >= minRequired, `Should process at least ${minRequired} messages, processed ${processedCount}`);
+
+  // Give a moment for any remaining processing
+  await delay(200);
+});
+
+Then("the consumer should process messages without error", () => {
+  currentConsumer.stop();
+  strictEqual(currentConsumer.status.isRunning, false);
+
+  // Verify messages were processed (tolerant of LocalStack message delivery issues)
+  ok(processedMessages.length > 0, "Should have processed at least some messages");
+});
+
+Then("messages should be processed with continuous polling behavior", () => {
+  // Verify continuous polling occurred:
+  // 1. Multiple polls should have happened (more than 1)
+  ok(pollTimestamps.length > 1, `Should have multiple polls, got ${pollTimestamps.length}`);
+
+  // 2. At least one poll should have happened while messages were still being processed
+  // (i.e., before all messages finished - indicated by rapid succession of polls)
+  const pollIntervals = [];
+  for (let i = 1; i < pollTimestamps.length; i++) {
+    pollIntervals.push(pollTimestamps[i] - pollTimestamps[i - 1]);
+  }
+
+  // In continuous polling, polls happen quickly (within ~500ms) while processing continues
+  // In batch mode, we'd see large gaps (2000ms+) waiting for batch completion
+  const fastPolls = pollIntervals.filter(interval => interval < 1000).length;
+
+  ok(fastPolls > 0, `Should have at least one fast poll (< 1s), indicating continuous polling. Got ${fastPolls} fast polls out of ${pollIntervals.length} total intervals`);
 });

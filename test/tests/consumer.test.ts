@@ -2486,6 +2486,94 @@ describe("Consumer", () => {
       assert(consumer.messageQueue);
     });
 
+    it("defaults batchSize to 10 for fastq mode when not specified", () => {
+      consumer = new Consumer({
+        queueUrl: QUEUE_URL,
+        region: REGION,
+        handleMessage,
+        sqs,
+        processConcurrentMessages: true,
+        concurrency: 5,
+      });
+
+      assert.equal(consumer.batchSize, 10);
+    });
+
+    it("defaults batchSize to 1 for legacy mode when not specified", () => {
+      consumer = new Consumer({
+        queueUrl: QUEUE_URL,
+        region: REGION,
+        handleMessage,
+        sqs,
+      });
+
+      assert.equal(consumer.batchSize, 1);
+    });
+
+    it("respects explicit batchSize in fastq mode", () => {
+      consumer = new Consumer({
+        queueUrl: QUEUE_URL,
+        region: REGION,
+        handleMessage,
+        sqs,
+        processConcurrentMessages: true,
+        concurrency: 3,
+        batchSize: 5,
+      });
+
+      assert.equal(consumer.batchSize, 5);
+    });
+
+    it("actually requests MaxNumberOfMessages=10 from SQS when fastq enabled with default batchSize", async () => {
+      consumer = new Consumer({
+        queueUrl: QUEUE_URL,
+        region: REGION,
+        handleMessage,
+        sqs,
+        processConcurrentMessages: true,
+        concurrency: 3,
+        authenticationErrorTimeout: AUTHENTICATION_ERROR_TIMEOUT,
+        // batchSize not specified - should default to 10
+      });
+
+      consumer.start();
+      await pEvent(consumer, "message_processed");
+      consumer.stop();
+
+      // Verify the SQS receiveMessage call used MaxNumberOfMessages: 10
+      sandbox.assert.calledWithMatch(sqs.send.firstCall, mockReceiveMessage);
+      sandbox.assert.match(
+        sqs.send.firstCall.args[0].input,
+        sinon.match({
+          MaxNumberOfMessages: 10,
+        }),
+      );
+    });
+
+    it("requests MaxNumberOfMessages=1 from SQS when legacy mode with default batchSize", async () => {
+      consumer = new Consumer({
+        queueUrl: QUEUE_URL,
+        region: REGION,
+        handleMessage,
+        sqs,
+        authenticationErrorTimeout: AUTHENTICATION_ERROR_TIMEOUT,
+        // batchSize not specified - should default to 1 in legacy mode
+      });
+
+      consumer.start();
+      await pEvent(consumer, "message_processed");
+      consumer.stop();
+
+      // Verify the SQS receiveMessage call used MaxNumberOfMessages: 1
+      sandbox.assert.calledWithMatch(sqs.send.firstCall, mockReceiveMessage);
+      sandbox.assert.match(
+        sqs.send.firstCall.args[0].input,
+        sinon.match({
+          MaxNumberOfMessages: 1,
+        }),
+      );
+    });
+
     it("validates that concurrency is required when processConcurrentMessages is true", () => {
       assert.throws(() => {
         // @ts-expect-error Testing validation error - concurrency required when processConcurrentMessages is true

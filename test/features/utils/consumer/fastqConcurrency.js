@@ -7,6 +7,8 @@ export let processedMessages = [];
 export let processingTimes = [];
 export let maxConcurrentProcessing = 0;
 let currentlyProcessing = 0;
+export let pollTimestamps = [];
+export let firstMessageStartTime = null;
 
 /**
  * Reset all tracking counters for testing.
@@ -17,6 +19,8 @@ export function resetCounters() {
   processingTimes = [];
   maxConcurrentProcessing = 0;
   currentlyProcessing = 0;
+  pollTimestamps = [];
+  firstMessageStartTime = null;
 }
 
 // Create a fastq consumer with specified concurrency
@@ -34,6 +38,7 @@ export function fastqConsumer(concurrency = 2, shouldThrowError = false, errorIn
     pollingWaitTimeMs: 50,
     processConcurrentMessages: true,
     concurrency,
+    batchSize: 2, // Use smaller batch for testing to get more response_processed events
     async handleMessage(message) {
       const startTime = Date.now();
       currentlyProcessing++;
@@ -106,6 +111,7 @@ export function createErrorConsumer(concurrency = 2, errorIndex = 1) {
     pollingWaitTimeMs: 50,
     processConcurrentMessages: true,
     concurrency,
+    batchSize: 2, // Use smaller batch for testing
     async handleMessage(message) {
       const startTime = Date.now();
       currentlyProcessing++;
@@ -197,4 +203,55 @@ export function createTestConsumer(options = {}) {
   }
   
   return Consumer.create(baseConfig);
+}
+
+// Create a consumer for testing continuous polling behavior
+/**
+ * Create a consumer for testing continuous polling behavior.
+ * @param {number} concurrency The concurrency level
+ * @returns {Consumer} A Consumer instance
+ */
+export function continuousPollingConsumer(concurrency = 3) {
+  const consumer = Consumer.create({
+    queueUrl: QUEUE_URL,
+    sqs,
+    pollingWaitTimeMs: 50,
+    processConcurrentMessages: true,
+    concurrency,
+    batchSize: 5, // Use smaller batch to force multiple polls
+    async handleMessage(message) {
+      const startTime = Date.now();
+
+      // Track first message start time
+      if (!firstMessageStartTime) {
+        firstMessageStartTime = startTime;
+      }
+
+      currentlyProcessing++;
+      maxConcurrentProcessing = Math.max(maxConcurrentProcessing, currentlyProcessing);
+
+      try {
+        // Simulate processing time to allow polls to happen during processing
+        await delay(200);
+
+        processedMessages.push(message);
+        processingTimes.push({
+          messageId: message.MessageId,
+          processingTime: Date.now() - startTime,
+          concurrentCount: currentlyProcessing
+        });
+
+        return message;
+      } finally {
+        currentlyProcessing--;
+      }
+    },
+  });
+
+  // Track response_processed events to see when polls complete
+  consumer.on('response_processed', () => {
+    pollTimestamps.push(Date.now());
+  });
+
+  return consumer;
 }
