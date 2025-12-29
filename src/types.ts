@@ -215,7 +215,9 @@ export type ConsumerOptions = LegacyConsumerOptions | FastqConsumerOptions;
 /**
  * Type guard to check if consumer options are for fastq mode.
  */
-export function isFastqConsumerOptions(options: ConsumerOptions): options is FastqConsumerOptions {
+export function isFastqConsumerOptions(
+  options: ConsumerOptions,
+): options is FastqConsumerOptions {
   return options.processConcurrentMessages === true;
 }
 

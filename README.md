@@ -87,8 +87,8 @@ const app = Consumer.create({
     // Process message - this will run with controlled concurrency
     await processMessage(message);
   },
-  processConcurrentMessages: true,  // Enable fastq processing
-  concurrency: 5,          // Process max 5 messages simultaneously
+  processConcurrentMessages: true, // Enable fastq processing
+  concurrency: 5, // Process max 5 messages simultaneously
   // batchSize defaults to 10 (SQS max) when processConcurrentMessages is true
   // This keeps the internal queue topped off for optimal throughput
 });
@@ -149,7 +149,7 @@ const consumer = Consumer.create({
   },
   processConcurrentMessages: true,
   concurrency: 2,
-  batchSize: 10
+  batchSize: 10,
 });
 
 consumer.start();
@@ -174,10 +174,13 @@ setTimeout(() => {
 #### Legacy vs FastQ Comparison
 
 **Legacy Mode - Individual Messages (Promise.all)**:
+
 ```js
 const app = Consumer.create({
   queueUrl: "...",
-  handleMessage: async (message) => { /* process each individually */ },
+  handleMessage: async (message) => {
+    /* process each individually */
+  },
   batchSize: 5, // Fetches 5, processes with Promise.all()
 });
 // ❌ All 5 start simultaneously, wait for slowest to complete
@@ -185,10 +188,13 @@ const app = Consumer.create({
 ```
 
 **Legacy Mode - Batch Processing**:
+
 ```js
 const app = Consumer.create({
   queueUrl: "...",
-  handleMessageBatch: async (messages) => { /* process batch together */ },
+  handleMessageBatch: async (messages) => {
+    /* process batch together */
+  },
   batchSize: 5, // Fetches and processes 5 as a single batch
 });
 // ❌ Entire batch waits for completion before next poll
@@ -196,13 +202,16 @@ const app = Consumer.create({
 ```
 
 **FastQ Mode (Recommended)**:
+
 ```js
 const app = Consumer.create({
   queueUrl: "...",
-  handleMessage: async (message) => { /* process */ },
+  handleMessage: async (message) => {
+    /* process */
+  },
   processConcurrentMessages: true,
-  concurrency: 3,    // Exactly 3 messages process concurrently
-  batchSize: 10,    // Fetch more, process with control
+  concurrency: 3, // Exactly 3 messages process concurrently
+  batchSize: 10, // Fetch more, process with control
 });
 // ✅ New messages start immediately as others complete
 // ✅ Consistent resource utilization
@@ -216,10 +225,12 @@ For fine-tuned control over continuous polling behavior:
 ```js
 const app = Consumer.create({
   queueUrl: "...",
-  handleMessage: async (message) => { /* process */ },
+  handleMessage: async (message) => {
+    /* process */
+  },
   processConcurrentMessages: true,
   concurrency: 5,
-  maxInFlightMessages: 20,  // Optional: defaults to concurrency * 3
+  maxInFlightMessages: 20, // Optional: defaults to concurrency * 3
   // Controls max messages in queue + processing
   // Higher = more throughput, more memory
   // Lower = less memory, potential starvation
@@ -227,6 +238,7 @@ const app = Consumer.create({
 ```
 
 **When to adjust `maxInFlightMessages`:**
+
 - **High throughput, fast processing**: Increase to `concurrency * 5` to keep queue full
 - **Memory constrained, slow processing**: Decrease to `concurrency * 2` to limit queued messages
 - **Default (`concurrency * 3`)**: Good balance for most use cases
@@ -239,16 +251,20 @@ Existing code continues to work unchanged. To upgrade to FastQ mode:
 // Before (Legacy - still works)
 const app = Consumer.create({
   queueUrl: "...",
-  handleMessage: async (message) => { /* process */ },
-  batchSize: 5
+  handleMessage: async (message) => {
+    /* process */
+  },
+  batchSize: 5,
 });
 
 // After (FastQ - enhanced performance)
 const app = Consumer.create({
   queueUrl: "...",
-  handleMessage: async (message) => { /* process */ },
-  processConcurrentMessages: true,  // Add this
-  concurrency: 5,          // Add this (controls concurrent processing)
+  handleMessage: async (message) => {
+    /* process */
+  },
+  processConcurrentMessages: true, // Add this
+  concurrency: 5, // Add this (controls concurrent processing)
   // batchSize automatically defaults to 10 (SQS max) for optimal throughput
 });
 ```
@@ -262,7 +278,7 @@ TypeScript enforces correct configuration at compile-time:
 const legacyConsumer = Consumer.create({
   queueUrl: "...",
   handleMessage: async () => {},
-  batchSize: 5
+  batchSize: 5,
 });
 
 // ✅ Valid: FastQ mode with both options
@@ -270,14 +286,14 @@ const fastqConsumer = Consumer.create({
   queueUrl: "...",
   handleMessage: async () => {},
   processConcurrentMessages: true,
-  concurrency: 3
+  concurrency: 3,
 });
 
 // ❌ TypeScript Error: concurrency requires processConcurrentMessages
 const invalid = Consumer.create({
   queueUrl: "...",
   handleMessage: async () => {},
-  concurrency: 3  // Error: processConcurrentMessages must be true
+  concurrency: 3, // Error: processConcurrentMessages must be true
 });
 ```
 
@@ -372,8 +388,9 @@ Updates the provided option with the provided value.
 Please note that any update of the option `pollingWaitTimeMs` will take effect only on next polling cycle.
 
 **Updateable Options:**
+
 - `visibilityTimeout`
-- `batchSize`  
+- `batchSize`
 - `waitTimeSeconds`
 - `pollingWaitTimeMs`
 - `concurrency` (only available when `processConcurrentMessages: true`)

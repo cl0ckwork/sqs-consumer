@@ -57,9 +57,13 @@ function validateOption(
       if (!allOptions.processConcurrentMessages) {
         // Use different error messages for strict vs non-strict modes
         if (strict) {
-          throw new Error("concurrency can only be set when processConcurrentMessages is true.");
+          throw new Error(
+            "concurrency can only be set when processConcurrentMessages is true.",
+          );
         } else {
-          throw new Error("processConcurrentMessages must be true when concurrency is specified.");
+          throw new Error(
+            "processConcurrentMessages must be true when concurrency is specified.",
+          );
         }
       }
       break;
@@ -94,13 +98,17 @@ function assertOptions(options: ConsumerOptions): void {
   if (options.concurrency !== undefined) {
     validateOption("concurrency", options.concurrency, options);
   }
-  
+
   // Validate that processConcurrentMessages and concurrency are used together
   if (options.processConcurrentMessages && !options.concurrency) {
-    throw new Error("concurrency must be specified when processConcurrentMessages is true.");
+    throw new Error(
+      "concurrency must be specified when processConcurrentMessages is true.",
+    );
   }
   if (!options.processConcurrentMessages && options.concurrency !== undefined) {
-    throw new Error("processConcurrentMessages must be true when concurrency is specified.");
+    throw new Error(
+      "processConcurrentMessages must be true when concurrency is specified.",
+    );
   }
 }
 

@@ -46,12 +46,12 @@ Given("Several messages are sent to the SQS queue", async () => {
 
   // Wait for messages to be available in LocalStack
   await new Promise((resolve) => setTimeout(resolve, 500));
-  
+
   // Retry queue size check
   let size2 = 0;
   let attempts = 0;
   const maxAttempts = 8;
-  
+
   while (size2 !== 3 && attempts < maxAttempts) {
     size2 = await producer.queueSize();
     if (size2 === 3) {
@@ -66,7 +66,11 @@ Given("Several messages are sent to the SQS queue", async () => {
   if (size2 >= 1) {
     actualMessageCount = size2; // Track the actual number for later assertions
   } else {
-    strictEqual(size2, 3, `Expected at least 1 message in queue, but found ${size2} after ${attempts} attempts. LocalStack appears to be dropping all messages.`);
+    strictEqual(
+      size2,
+      3,
+      `Expected at least 1 message in queue, but found ${size2} after ${attempts} attempts. LocalStack appears to be dropping all messages.`,
+    );
   }
 });
 
@@ -88,7 +92,11 @@ Then(
 
     await pEvent(consumer, "stopped");
 
-    strictEqual(numProcessed, actualMessageCount, `Should process exactly ${actualMessageCount} messages (the number that were actually queued)`);
+    strictEqual(
+      numProcessed,
+      actualMessageCount,
+      `Should process exactly ${actualMessageCount} messages (the number that were actually queued)`,
+    );
 
     const size = await producer.queueSize();
     strictEqual(size, 0, "Queue should be empty after processing");

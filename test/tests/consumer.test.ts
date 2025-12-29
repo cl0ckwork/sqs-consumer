@@ -2652,11 +2652,7 @@ describe("Consumer", () => {
       consumer.updateOption("concurrency", 3);
 
       assert.equal(consumer.concurrency, 3);
-      sandbox.assert.calledWithMatch(
-        optionUpdatedListener,
-        "concurrency",
-        3,
-      );
+      sandbox.assert.calledWithMatch(optionUpdatedListener, "concurrency", 3);
     });
 
     it("does not allow updating concurrency on non-fastq consumer", () => {
@@ -2687,8 +2683,8 @@ describe("Consumer", () => {
         concurrency: 2,
       });
 
-      const killSpy = sandbox.spy(consumer.messageQueue, 'kill');
-      
+      const killSpy = sandbox.spy(consumer.messageQueue, "kill");
+
       consumer.start();
       consumer.stop({ abort: true });
 
@@ -2705,8 +2701,8 @@ describe("Consumer", () => {
         concurrency: 2,
       });
 
-      const pauseSpy = sandbox.spy(consumer.messageQueue, 'pause');
-      
+      const pauseSpy = sandbox.spy(consumer.messageQueue, "pause");
+
       consumer.start();
       consumer.stop();
 

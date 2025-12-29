@@ -74,7 +74,7 @@ export class Consumer extends TypedEventEmitter {
   private stopRequestedAtTimestamp: number;
   public abortController: AbortController;
   private extendedAWSErrors: boolean;
-  
+
   // Fastq-specific properties - initialized based on configuration
   private messageQueue: queueAsPromised<Message, void> | null = null;
   public concurrency: number | null = null;
@@ -99,7 +99,8 @@ export class Consumer extends TypedEventEmitter {
       options.messageSystemAttributeNames || [];
     // Default batchSize to 10 for fastq mode (SQS max) to keep queue topped off
     // Legacy mode defaults to 1 for backward compatibility
-    this.batchSize = options.batchSize || (isFastqConsumerOptions(options) ? 10 : 1);
+    this.batchSize =
+      options.batchSize || (isFastqConsumerOptions(options) ? 10 : 1);
     this.visibilityTimeout = options.visibilityTimeout;
     this.terminateVisibilityTimeout =
       options.terminateVisibilityTimeout || false;
@@ -118,14 +119,18 @@ export class Consumer extends TypedEventEmitter {
         useQueueUrlAsEndpoint: options.useQueueUrlAsEndpoint ?? true,
         region: options.region || process.env.AWS_REGION || "eu-west-1",
       });
-      
+
     // Initialize fastq properties based on options type
     if (isFastqConsumerOptions(options)) {
       // Type-safe: we know concurrency exists
       this.processConcurrentMessages = true;
       this.concurrency = options.concurrency;
-      this.maxInFlightMessages = options.maxInFlightMessages || (options.concurrency * 3);
-      this.messageQueue = fastq.promise(this.processMessageWorker.bind(this), options.concurrency);
+      this.maxInFlightMessages =
+        options.maxInFlightMessages || options.concurrency * 3;
+      this.messageQueue = fastq.promise(
+        this.processMessageWorker.bind(this),
+        options.concurrency,
+      );
     } else {
       // Legacy mode
       this.processConcurrentMessages = false;
@@ -154,12 +159,12 @@ export class Consumer extends TypedEventEmitter {
       }
       // Create a new abort controller each time the consumer is started
       this.abortController = new AbortController();
-      
+
       // Resume the internal message queue if it exists and was paused
       if (this.isFastqMode()) {
         this.getMessageQueue().resume();
       }
-      
+
       logger.debug("starting");
       this.stopped = false;
       this.emit("started");
@@ -257,56 +262,63 @@ export class Consumer extends TypedEventEmitter {
   /**
    * Gracefully updates concurrency by draining the current queue first.
    * This prevents message loss by allowing all pending messages to start processing.
-   * 
+   *
    * @param newConcurrency The new concurrency value
    * @param options Options for the graceful update
    */
   public async updateConcurrencyGracefully(
-    newConcurrency: number, 
-    options: { 
+    newConcurrency: number,
+    options: {
       drainTimeout?: number; // Max time to wait for queue to drain (default: 30s)
       pausePolling?: boolean; // Whether to pause polling during update (default: true)
-    } = {}
+    } = {},
   ): Promise<void> {
     if (!this.isFastqMode()) {
-      throw new Error("Graceful concurrency updates only available when processConcurrentMessages is true");
+      throw new Error(
+        "Graceful concurrency updates only available when processConcurrentMessages is true",
+      );
     }
 
     const { drainTimeout = 30000, pausePolling = true } = options;
     const currentQueue = this.getMessageQueue();
-    
+
     // 1. Pause polling to prevent new messages
     const wasPolling = this.isPolling;
     if (pausePolling && wasPolling) {
       this.stop({ abort: false });
       // Wait for current poll cycle to complete
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, 100));
     }
 
     try {
       // 2. Pause the queue to prevent new tasks from being processed
       currentQueue.pause();
-      
+
       // 3. Wait for queue to drain (all pending tasks to start)
       const drainStartTime = Date.now();
-      while (!currentQueue.idle() && (Date.now() - drainStartTime) < drainTimeout) {
-        await new Promise(resolve => setTimeout(resolve, 100));
+      while (
+        !currentQueue.idle() &&
+        Date.now() - drainStartTime < drainTimeout
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
       }
-      
+
       // 4. Update the concurrency
       currentQueue.kill(); // Now safe to kill as queue is drained
       this.concurrency = newConcurrency;
-      this.messageQueue = fastq.promise(this.processMessageWorker.bind(this), newConcurrency);
-      
+      this.messageQueue = fastq.promise(
+        this.processMessageWorker.bind(this),
+        newConcurrency,
+      );
+
       // 5. Resume processing
       if (wasPolling && pausePolling) {
         this.start();
       } else if (!pausePolling) {
         this.getMessageQueue().resume();
       }
-      
+
       this.emit("option_updated", "concurrency", newConcurrency);
-      
     } catch (error) {
       // Restore original state if something goes wrong
       if (wasPolling && pausePolling) {
@@ -318,11 +330,11 @@ export class Consumer extends TypedEventEmitter {
 
   /**
    * Validates and then updates the provided option to the provided value.
-   * 
+   *
    * ⚠️ **Important**: When updating `concurrency` on a fastq-enabled consumer,
    * this method immediately recreates the internal queue. For graceful updates
    * that drain pending messages first, use `updateConcurrencyGracefully()` instead.
-   * 
+   *
    * @param option The option to validate and then update
    * @param value The value to set the provided option to
    */
@@ -336,14 +348,17 @@ export class Consumer extends TypedEventEmitter {
     if (option === "concurrency" && this.isFastqMode()) {
       const newConcurrency = value as number;
       const currentQueue = this.getMessageQueue();
-      
+
       // Immediate update - kills pending messages
       const wasRunning = !currentQueue.idle();
       currentQueue.kill(); // Stop current queue immediately
-      
+
       this.concurrency = newConcurrency;
-      this.messageQueue = fastq.promise(this.processMessageWorker.bind(this), newConcurrency);
-      
+      this.messageQueue = fastq.promise(
+        this.processMessageWorker.bind(this),
+        newConcurrency,
+      );
+
       if (wasRunning) {
         this.getMessageQueue().resume();
       }
@@ -384,7 +399,10 @@ export class Consumer extends TypedEventEmitter {
     }
 
     // In fastq mode, check if we have capacity before polling
-    if (this.isFastqMode() && this.inFlightMessages >= this.maxInFlightMessages) {
+    if (
+      this.isFastqMode() &&
+      this.inFlightMessages >= this.maxInFlightMessages
+    ) {
       logger.debug("poll_deferred", {
         detail: `At capacity (${this.inFlightMessages}/${this.maxInFlightMessages}), deferring poll...`,
       });
@@ -493,7 +511,6 @@ export class Consumer extends TypedEventEmitter {
     }
     return this.messageQueue;
   }
-
 
   /**
    * Worker function for fastq queue that processes individual messages.

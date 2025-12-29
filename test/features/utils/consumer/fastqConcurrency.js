@@ -31,7 +31,11 @@ export function resetCounters() {
  * @param {number} errorIndex Index at which to throw error
  * @returns {Consumer} A Consumer instance
  */
-export function fastqConsumer(concurrency = 2, shouldThrowError = false, errorIndex = -1) {
+export function fastqConsumer(
+  concurrency = 2,
+  shouldThrowError = false,
+  errorIndex = -1,
+) {
   return Consumer.create({
     queueUrl: QUEUE_URL,
     sqs,
@@ -42,24 +46,27 @@ export function fastqConsumer(concurrency = 2, shouldThrowError = false, errorIn
     async handleMessage(message) {
       const startTime = Date.now();
       currentlyProcessing++;
-      maxConcurrentProcessing = Math.max(maxConcurrentProcessing, currentlyProcessing);
-      
+      maxConcurrentProcessing = Math.max(
+        maxConcurrentProcessing,
+        currentlyProcessing,
+      );
+
       try {
         // Simulate some processing time to test concurrency
         await delay(100);
-        
+
         // Check if we should throw an error for this message
         if (shouldThrowError && processedMessages.length === errorIndex) {
           throw new Error(`Simulated error for message ${message.Body}`);
         }
-        
+
         processedMessages.push(message);
         processingTimes.push({
           messageId: message.MessageId,
           processingTime: Date.now() - startTime,
-          concurrentCount: currentlyProcessing
+          concurrentCount: currentlyProcessing,
         });
-        
+
         return message;
       } finally {
         currentlyProcessing--;
@@ -81,17 +88,17 @@ export function legacyConsumer() {
     batchSize: 3, // Test legacy concurrent processing
     async handleMessage(message) {
       const startTime = Date.now();
-      
+
       // Simulate processing time
       await delay(50);
-      
+
       processedMessages.push(message);
       processingTimes.push({
         messageId: message.MessageId,
         processingTime: Date.now() - startTime,
-        mode: 'legacy'
+        mode: "legacy",
       });
-      
+
       return message;
     },
   });
@@ -115,24 +122,27 @@ export function createErrorConsumer(concurrency = 2, errorIndex = 1) {
     async handleMessage(message) {
       const startTime = Date.now();
       currentlyProcessing++;
-      maxConcurrentProcessing = Math.max(maxConcurrentProcessing, currentlyProcessing);
-      
+      maxConcurrentProcessing = Math.max(
+        maxConcurrentProcessing,
+        currentlyProcessing,
+      );
+
       try {
         // Simulate processing time
         await delay(100);
-        
+
         // Throw error for specific message index
         if (processedMessages.length === errorIndex) {
           throw new Error(`Intentional error for message: ${message.Body}`);
         }
-        
+
         processedMessages.push(message);
         processingTimes.push({
           messageId: message.MessageId,
           processingTime: Date.now() - startTime,
-          concurrentCount: currentlyProcessing
+          concurrentCount: currentlyProcessing,
         });
-        
+
         return message;
       } finally {
         currentlyProcessing--;
@@ -154,9 +164,9 @@ export function createTestConsumer(options = {}) {
     processingDelay = 100,
     shouldError = false,
     errorIndex = -1,
-    batchSize = 1
+    batchSize = 1,
   } = options;
-  
+
   const baseConfig = {
     queueUrl: QUEUE_URL,
     sqs,
@@ -164,29 +174,34 @@ export function createTestConsumer(options = {}) {
     batchSize,
     async handleMessage(message) {
       const startTime = Date.now();
-      
+
       if (processConcurrentMessages) {
         currentlyProcessing++;
-        maxConcurrentProcessing = Math.max(maxConcurrentProcessing, currentlyProcessing);
+        maxConcurrentProcessing = Math.max(
+          maxConcurrentProcessing,
+          currentlyProcessing,
+        );
       }
-      
+
       try {
         // Simulate processing time
         await delay(processingDelay);
-        
+
         // Check if we should throw an error
         if (shouldError && processedMessages.length === errorIndex) {
           throw new Error(`Test error for message: ${message.Body}`);
         }
-        
+
         processedMessages.push(message);
         processingTimes.push({
           messageId: message.MessageId,
           processingTime: Date.now() - startTime,
-          concurrentCount: processConcurrentMessages ? currentlyProcessing : 'legacy',
-          mode: processConcurrentMessages ? 'fastq' : 'legacy'
+          concurrentCount: processConcurrentMessages
+            ? currentlyProcessing
+            : "legacy",
+          mode: processConcurrentMessages ? "fastq" : "legacy",
         });
-        
+
         return message;
       } finally {
         if (processConcurrentMessages) {
@@ -195,13 +210,13 @@ export function createTestConsumer(options = {}) {
       }
     },
   };
-  
+
   // Add fastq options if enabled
   if (processConcurrentMessages) {
     baseConfig.processConcurrentMessages = true;
     baseConfig.concurrency = concurrency;
   }
-  
+
   return Consumer.create(baseConfig);
 }
 
@@ -228,7 +243,10 @@ export function continuousPollingConsumer(concurrency = 3) {
       }
 
       currentlyProcessing++;
-      maxConcurrentProcessing = Math.max(maxConcurrentProcessing, currentlyProcessing);
+      maxConcurrentProcessing = Math.max(
+        maxConcurrentProcessing,
+        currentlyProcessing,
+      );
 
       try {
         // Simulate processing time to allow polls to happen during processing
@@ -238,7 +256,7 @@ export function continuousPollingConsumer(concurrency = 3) {
         processingTimes.push({
           messageId: message.MessageId,
           processingTime: Date.now() - startTime,
-          concurrentCount: currentlyProcessing
+          concurrentCount: currentlyProcessing,
         });
 
         return message;
@@ -249,7 +267,7 @@ export function continuousPollingConsumer(concurrency = 3) {
   });
 
   // Track response_processed events to see when polls complete
-  consumer.on('response_processed', () => {
+  consumer.on("response_processed", () => {
     pollTimestamps.push(Date.now());
   });
 
