@@ -1,6 +1,6 @@
 {
   "name": "sqs-consumer",
-  "version": "11.0.1",
+  "version": "11.0.2",
   "description": "Build SQS-based Node applications without the boilerplate",
   "type": "module",
   "main": "dist/cjs/index.js",
