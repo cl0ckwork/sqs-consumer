@@ -4,10 +4,12 @@ import { PurgeQueueCommand } from "@aws-sdk/client-sqs";
 import { pEvent } from "p-event";
 
 import { consumer } from "../utils/consumer/gracefulShutdown.js";
+import { fastqConsumer } from "../utils/consumer/gracefulShutdownFastq.js";
 import { producer } from "../utils/producer.js";
 import { sqs, QUEUE_URL } from "../utils/sqs.js";
 
 let actualMessageCount = 0;
+let actualMessageCountFastq = 0;
 
 After(() => {
   actualMessageCount = 0;
@@ -105,6 +107,102 @@ Then(
 
 After(async () => {
   consumer.stop();
+  fastqConsumer.stop();
 
   await sqs.send(new PurgeQueueCommand({ QueueUrl: QUEUE_URL }));
 });
+
+// Fastq-specific steps
+Given("Several messages are sent to the SQS queue for fastq", async () => {
+  const params = {
+    QueueUrl: QUEUE_URL,
+  };
+  const command = new PurgeQueueCommand(params);
+  const response = await sqs.send(command);
+
+  strictEqual(response.$metadata.httpStatusCode, 200);
+
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+
+  const size = await producer.queueSize();
+
+  if (size > 0) {
+    await sqs.send(command);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const sizeAfterSecondPurge = await producer.queueSize();
+    strictEqual(
+      sizeAfterSecondPurge,
+      0,
+      "Queue should be empty after second purge",
+    );
+  } else {
+    strictEqual(size, 0, "Queue should be empty after purge");
+  }
+
+  // Send messages in batches to avoid LocalStack issues
+  await producer.send(["msg1", "msg2", "msg3", "msg4", "msg5"]);
+
+  // Wait for messages to be available in LocalStack
+  await new Promise((resolve) => setTimeout(resolve, 500));
+
+  // Retry queue size check
+  let size2 = 0;
+  let attempts = 0;
+  const maxAttempts = 8;
+
+  while (size2 !== 5 && attempts < maxAttempts) {
+    size2 = await producer.queueSize();
+    if (size2 === 5) {
+      break;
+    }
+
+    attempts++;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+
+  // Due to LocalStack limitations, we allow for some message loss but require at least 1 message
+  if (size2 >= 1) {
+    actualMessageCountFastq = size2; // Track the actual number for later assertions
+  } else {
+    strictEqual(
+      size2,
+      5,
+      `Expected at least 1 message in queue, but found ${size2} after ${attempts} attempts. LocalStack appears to be dropping all messages.`,
+    );
+  }
+});
+
+Then(
+  "the fastq application is stopped while messages are in flight",
+  async () => {
+    fastqConsumer.start();
+
+    // Wait a bit for messages to start processing
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    fastqConsumer.stop();
+
+    strictEqual(fastqConsumer.status.isRunning, false);
+  },
+);
+
+Then(
+  "the in-flight fastq messages should be processed before stopped is emitted",
+  async () => {
+    let numProcessed = 0;
+    fastqConsumer.on("message_processed", () => {
+      numProcessed++;
+    });
+
+    await pEvent(fastqConsumer, "stopped");
+
+    strictEqual(
+      numProcessed,
+      actualMessageCountFastq,
+      `Should process exactly ${actualMessageCountFastq} messages (the number that were actually queued)`,
+    );
+
+    const size = await producer.queueSize();
+    strictEqual(size, 0, "Queue should be empty after processing");
+  },
+);

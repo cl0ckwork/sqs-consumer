@@ -228,10 +228,14 @@ export class Consumer extends TypedEventEmitter {
 
   /**
    * Wait for final poll and in flight messages to complete.
+   * In fastq mode, this includes waiting for all messages in the queue to finish processing.
    * @private
    */
   private waitForPollingToComplete(): void {
-    if (!this.isPolling || !(this.pollingCompleteWaitTimeMs > 0)) {
+    // Check if polling is complete AND all fastq messages are processed
+    const pollingComplete = !this.isPolling && this.inFlightMessages === 0;
+
+    if (pollingComplete || !(this.pollingCompleteWaitTimeMs > 0)) {
       this.emit("stopped");
       return;
     }
