@@ -1,6 +1,6 @@
 import {
   SQSClient,
-  Message,
+  type Message,
   ChangeMessageVisibilityCommand,
   ChangeMessageVisibilityCommandInput,
   ChangeMessageVisibilityCommandOutput,
@@ -48,8 +48,10 @@ export class Consumer extends TypedEventEmitter {
   protected queueUrl: string;
   private isFifoQueue: boolean;
   private suppressFifoWarning: boolean;
-  private handleMessage: (message: Message) => Promise<Message | void>;
-  private handleMessageBatch: (message: Message[]) => Promise<Message[] | void>;
+  private handleMessage: (message: Message) => Promise<Message | undefined>;
+  private handleMessageBatch: (
+    messages: Message[],
+  ) => Promise<Message[] | undefined>;
   private preReceiveMessageCallback?: () => Promise<void>;
   private postReceiveMessageCallback?: () => Promise<void>;
   private sqs: SQSClient;
@@ -74,6 +76,7 @@ export class Consumer extends TypedEventEmitter {
   private stopRequestedAtTimestamp: number;
   public abortController: AbortController;
   private extendedAWSErrors: boolean;
+  private strictReturn: boolean;
 
   // Fastq-specific properties - initialized based on configuration
   private messageQueue: queueAsPromised<Message, void> | null = null;
@@ -113,6 +116,7 @@ export class Consumer extends TypedEventEmitter {
     this.shouldDeleteMessages = options.shouldDeleteMessages ?? true;
     this.alwaysAcknowledge = options.alwaysAcknowledge ?? false;
     this.extendedAWSErrors = options.extendedAWSErrors ?? false;
+    this.strictReturn = options.strictReturn ?? false;
     this.sqs =
       options.sqs ||
       new SQSClient({
@@ -749,11 +753,11 @@ export class Consumer extends TypedEventEmitter {
     let handleMessageTimeoutId: NodeJS.Timeout | undefined = undefined;
 
     try {
-      let result: Message | void;
+      let result: Message | undefined | null;
 
       if (this.handleMessageTimeout) {
-        const pending: Promise<void> = new Promise((_, reject): void => {
-          handleMessageTimeoutId = setTimeout((): void => {
+        const pending: Promise<never> = new Promise<never>((_, reject) => {
+          handleMessageTimeoutId = setTimeout(() => {
             reject(new TimeoutError());
           }, this.handleMessageTimeout);
         });
@@ -762,9 +766,31 @@ export class Consumer extends TypedEventEmitter {
         result = await this.handleMessage(message);
       }
 
-      return !this.alwaysAcknowledge && result instanceof Object
-        ? result
-        : message;
+      if (this.alwaysAcknowledge) {
+        return message;
+      }
+
+      if (result instanceof Object) {
+        return result;
+      }
+
+      if (result === undefined) {
+        return null;
+      }
+
+      if (result === null) {
+        if (this.strictReturn) {
+          throw new Error(
+            "strictReturn is enabled: handleMessage must return a Message object or an object with the same MessageId. Returning null is not allowed.",
+          );
+        }
+        console.warn(
+          "[DEPRECATION] Future versions will throw on void/null returns. Enable `strictReturn` now to prepare.",
+        );
+        return null;
+      }
+
+      return null;
     } catch (err) {
       if (err instanceof TimeoutError) {
         throw toTimeoutError(
@@ -794,16 +820,40 @@ export class Consumer extends TypedEventEmitter {
    */
   private async executeBatchHandler(messages: Message[]): Promise<Message[]> {
     try {
-      const result: void | Message[] = await this.handleMessageBatch(messages);
+      const result: Message[] | undefined | null =
+        await this.handleMessageBatch(messages);
 
-      return !this.alwaysAcknowledge && result instanceof Object
-        ? result
-        : messages;
+      if (this.alwaysAcknowledge) {
+        return messages;
+      }
+
+      if (Array.isArray(result)) {
+        return result;
+      }
+
+      if (result === undefined) {
+        return [];
+      }
+
+      if (result === null) {
+        if (this.strictReturn) {
+          throw new Error(
+            "strictReturn is enabled: handleMessageBatch must return an array of Message objects. Returning null is not allowed.",
+          );
+        }
+
+        console.warn(
+          "[DEPRECATION] Future versions will throw on void/null returns. Enable `strictReturn` now to prepare.",
+        );
+        return [];
+      }
+
+      return [];
     } catch (err) {
       if (err instanceof Error) {
         throw toStandardError(
           err,
-          `Unexpected message handler failure: ${err.message}`,
+          `Unexpected message batch handler failure: ${err.message}`,
           messages,
         );
       }

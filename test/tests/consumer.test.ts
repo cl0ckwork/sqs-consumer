@@ -6,13 +6,15 @@ import {
   ReceiveMessageCommand,
   SQSClient,
   QueueAttributeName,
-  Message,
 } from "@aws-sdk/client-sqs";
+
+import type { Message } from "@aws-sdk/client-sqs";
+
 import { assert } from "chai";
 import * as sinon from "sinon";
 import { pEvent } from "p-event";
 
-import { AWSError } from "../../src/types.js";
+import type { AWSError } from "../../src/types.js";
 import { Consumer } from "../../src/consumer.js";
 import { logger } from "../../src/logger.js";
 
@@ -74,8 +76,9 @@ describe("Consumer", () => {
 
   beforeEach(() => {
     clock = sinon.useFakeTimers();
-    handleMessage = sandbox.stub().resolves(null);
-    handleMessageBatch = sandbox.stub().resolves(null);
+    handleMessage = sandbox.stub().resolves(response.Messages[0]);
+    handleMessageBatch = sandbox.stub().resolves([]);
+
     sqs = sinon.createStubInstance(SQSClient);
     sqs.send = sinon.stub();
 
@@ -333,7 +336,7 @@ describe("Consumer", () => {
         queueUrl: QUEUE_URL,
         region: REGION,
         handleMessage: () =>
-          new Promise((resolve) => setTimeout(resolve, 1000)),
+          new Promise((resolve) => setTimeout(() => resolve(undefined), 1000)),
         handleMessageTimeout,
         sqs,
         authenticationErrorTimeout: AUTHENTICATION_ERROR_TIMEOUT,
@@ -436,7 +439,7 @@ describe("Consumer", () => {
     it("fires an error event when an error occurs deleting a message", async () => {
       const deleteErr = new Error("Delete error");
 
-      handleMessage.resolves(null);
+      handleMessage.resolves(response.Messages[0]);
       sqs.send.withArgs(mockDeleteMessage).rejects(deleteErr);
 
       consumer.start();
@@ -473,7 +476,7 @@ describe("Consumer", () => {
       const sqsError = new Error("Processing error");
       sqsError.name = "SQSError";
 
-      handleMessage.resolves();
+      handleMessage.resolves(response.Messages[0]);
       sqs.send.withArgs(mockDeleteMessage).rejects(sqsError);
 
       consumer.start();
@@ -780,7 +783,7 @@ describe("Consumer", () => {
     });
 
     it("fires a message_processed event when a message is successfully deleted", async () => {
-      handleMessage.resolves();
+      handleMessage.resolves(response.Messages[0]);
 
       consumer.start();
       const message = await pEvent(consumer, "message_received");
@@ -820,7 +823,7 @@ describe("Consumer", () => {
     });
 
     it("deletes the message when the handleMessage function is called", async () => {
-      handleMessage.resolves();
+      handleMessage.resolves(response.Messages[0]);
 
       consumer.start();
       await pEvent(consumer, "message_processed");
@@ -846,7 +849,7 @@ describe("Consumer", () => {
         shouldDeleteMessages: false,
       });
 
-      handleMessage.resolves();
+      handleMessage.resolves(response.Messages[0]);
 
       consumer.start();
       await pEvent(consumer, "message_processed");
@@ -866,7 +869,7 @@ describe("Consumer", () => {
     });
 
     it("consumes another message once one is processed", async () => {
-      handleMessage.resolves();
+      handleMessage.resolves(response.Messages[0]);
 
       consumer.start();
       await clock.runToLastAsync();
@@ -1156,7 +1159,7 @@ describe("Consumer", () => {
           },
         ],
       });
-      handleMessage.resolves(null);
+      handleMessage.resolves(response.Messages[0]);
 
       consumer = new Consumer({
         queueUrl: QUEUE_URL,
@@ -1211,7 +1214,7 @@ describe("Consumer", () => {
       assert.ok(err);
       assert.equal(
         err.message,
-        "Unexpected message handler failure: unexpected parsing error",
+        "Unexpected message batch handler failure: unexpected parsing error",
       );
     });
 
@@ -1273,7 +1276,7 @@ describe("Consumer", () => {
       assert.ok(err);
       assert.equal(
         err.message,
-        "Unexpected message handler failure: unexpected parsing error",
+        "Unexpected message batch handler failure: unexpected parsing error",
       );
     });
 
@@ -1296,28 +1299,61 @@ describe("Consumer", () => {
       sandbox.assert.callCount(handleMessage, 0);
     });
 
-    it("ack the message if handleMessage returns void", async () => {
+    it("does not ack the message if handleMessage returns void", async () => {
       consumer = new Consumer({
         queueUrl: QUEUE_URL,
         region: REGION,
+        // @ts-expect-error - we want to test expected behaviour
         handleMessage: async () => {},
         sqs,
       });
 
       consumer.start();
-      await pEvent(consumer, "message_processed");
+      await pEvent(consumer, "response_processed");
       consumer.stop();
 
-      sandbox.assert.callCount(sqs.send, 2);
+      sandbox.assert.callCount(sqs.send, 1);
       sandbox.assert.calledWithMatch(sqs.send.firstCall, mockReceiveMessage);
-      sandbox.assert.calledWithMatch(sqs.send.secondCall, mockDeleteMessage);
-      sandbox.assert.match(
-        sqs.send.secondCall.args[0].input,
-        sinon.match({
-          QueueUrl: QUEUE_URL,
-          ReceiptHandle: "receipt-handle",
-        }),
+      sandbox.assert.neverCalledWithMatch(sqs.send, mockDeleteMessage);
+    });
+
+    it("logs deprecation warning when handleMessage returns null", async () => {
+      const consoleWarnStub = sandbox.stub(console, "warn");
+
+      consumer = new Consumer({
+        queueUrl: QUEUE_URL,
+        region: REGION,
+        handleMessage: async () => null,
+        sqs,
+      });
+
+      consumer.start();
+      await pEvent(consumer, "response_processed");
+      consumer.stop();
+
+      sandbox.assert.calledOnce(consoleWarnStub);
+      sandbox.assert.calledWithMatch(
+        consoleWarnStub,
+        "[DEPRECATION] Future versions will throw on void/null returns. Enable `strictReturn` now to prepare.",
       );
+    });
+
+    it("does not log deprecation warning when handleMessage returns undefined", async () => {
+      const consoleWarnStub = sandbox.stub(console, "warn");
+      const undefinedHandler = sandbox.stub().resolves(undefined);
+
+      consumer = new Consumer({
+        queueUrl: QUEUE_URL,
+        region: REGION,
+        handleMessage: undefinedHandler,
+        sqs,
+      });
+
+      consumer.start();
+      await pEvent(consumer, "response_processed");
+      consumer.stop();
+
+      sandbox.assert.notCalled(consoleWarnStub);
     });
 
     it("ack the message if handleMessage returns a message with the same ID", async () => {
@@ -1427,6 +1463,7 @@ describe("Consumer", () => {
       consumer.stop();
 
       sandbox.assert.callCount(sqs.send, 1);
+      sandbox.assert.calledWithMatch(sqs.send.firstCall, mockReceiveMessage);
       sandbox.assert.neverCalledWithMatch(sqs.send, mockDeleteMessageBatch);
     });
 
@@ -1459,10 +1496,11 @@ describe("Consumer", () => {
       );
     });
 
-    it("ack all messages if handleMessageBatch returns void", async () => {
+    it("does not ack messages if handleMessageBatch returns void", async () => {
       consumer = new Consumer({
         queueUrl: QUEUE_URL,
         region: REGION,
+        // @ts-expect-error - we want to test expected behaviour
         handleMessageBatch: async () => {},
         batchSize: 2,
         sqs,
@@ -1472,19 +1510,9 @@ describe("Consumer", () => {
       await pEvent(consumer, "response_processed");
       consumer.stop();
 
-      sandbox.assert.callCount(sqs.send, 2);
+      sandbox.assert.callCount(sqs.send, 1);
       sandbox.assert.calledWithMatch(sqs.send.firstCall, mockReceiveMessage);
-      sandbox.assert.calledWithMatch(
-        sqs.send.secondCall,
-        mockDeleteMessageBatch,
-      );
-      sandbox.assert.match(
-        sqs.send.secondCall.args[0].input,
-        sinon.match({
-          QueueUrl: QUEUE_URL,
-          Entries: [{ Id: "123", ReceiptHandle: "receipt-handle" }],
-        }),
-      );
+      sandbox.assert.neverCalledWithMatch(sqs.send, mockDeleteMessageBatch);
     });
 
     it("ack only returned messages if handleMessagesBatch returns an array", async () => {
@@ -1517,12 +1545,168 @@ describe("Consumer", () => {
       );
     });
 
+    it("logs deprecation warning when handleMessageBatch returns null", async () => {
+      const consoleWarnStub = sandbox.stub(console, "warn");
+
+      consumer = new Consumer({
+        queueUrl: QUEUE_URL,
+        region: REGION,
+        handleMessageBatch: async () => null,
+        batchSize: 2,
+        sqs,
+      });
+
+      consumer.start();
+      await pEvent(consumer, "response_processed");
+      consumer.stop();
+
+      sandbox.assert.calledOnce(consoleWarnStub);
+      sandbox.assert.calledWithMatch(
+        consoleWarnStub,
+        "[DEPRECATION] Future versions will throw on void/null returns. Enable `strictReturn` now to prepare.",
+      );
+    });
+
+    it("does not ack messages if handleMessageBatch returns undefined", async () => {
+      consumer = new Consumer({
+        queueUrl: QUEUE_URL,
+        region: REGION,
+        handleMessageBatch: async () => undefined,
+        batchSize: 2,
+        sqs,
+      });
+
+      consumer.start();
+      await pEvent(consumer, "response_processed");
+      consumer.stop();
+
+      sandbox.assert.callCount(sqs.send, 1);
+      sandbox.assert.calledWithMatch(sqs.send.firstCall, mockReceiveMessage);
+      sandbox.assert.neverCalledWithMatch(sqs.send, mockDeleteMessageBatch);
+    });
+
+    it("does not log deprecation warning when handleMessageBatch returns undefined", async () => {
+      const consoleLogStub = sandbox.stub(console, "warn");
+
+      consumer = new Consumer({
+        queueUrl: QUEUE_URL,
+        region: REGION,
+        handleMessageBatch: async () => undefined,
+        batchSize: 2,
+        sqs,
+      });
+
+      consumer.start();
+      await pEvent(consumer, "response_processed");
+      consumer.stop();
+
+      sandbox.assert.notCalled(consoleLogStub);
+    });
+
+    it("does not ack messages if handleMessageBatch returns []", async () => {
+      consumer = new Consumer({
+        queueUrl: QUEUE_URL,
+        region: REGION,
+        handleMessageBatch: async () => [],
+        batchSize: 2,
+        sqs,
+      });
+
+      consumer.start();
+      await pEvent(consumer, "response_processed");
+      consumer.stop();
+
+      sandbox.assert.callCount(sqs.send, 1);
+      sandbox.assert.calledWithMatch(sqs.send.firstCall, mockReceiveMessage);
+      sandbox.assert.neverCalledWithMatch(sqs.send, mockDeleteMessageBatch);
+    });
+
+    describe("strictReturn flag", () => {
+      it("throws error when strictReturn is enabled and handleMessage returns null", async () => {
+        consumer = new Consumer({
+          queueUrl: QUEUE_URL,
+          region: REGION,
+          handleMessage: async () => null,
+          sqs,
+          strictReturn: true,
+        });
+
+        consumer.start();
+        const err: any = await pEvent(consumer, "processing_error");
+        consumer.stop();
+
+        assert.ok(err);
+        assert.equal(
+          err.message,
+          "Unexpected message handler failure: strictReturn is enabled: handleMessage must return a Message object or an object with the same MessageId. Returning null is not allowed.",
+        );
+      });
+
+      it("throws error when strictReturn is enabled and handleMessageBatch returns null", async () => {
+        consumer = new Consumer({
+          queueUrl: QUEUE_URL,
+          region: REGION,
+          handleMessageBatch: async () => null,
+          batchSize: 2,
+          sqs,
+          strictReturn: true,
+        });
+
+        consumer.start();
+        const err: any = await pEvent(consumer, "error");
+        consumer.stop();
+
+        assert.ok(err);
+        assert.equal(
+          err.message,
+          "Unexpected message batch handler failure: strictReturn is enabled: handleMessageBatch must return an array of Message objects. Returning null is not allowed.",
+        );
+      });
+
+      it("works normally when strictReturn is disabled and handleMessage returns null", async () => {
+        consumer = new Consumer({
+          queueUrl: QUEUE_URL,
+          region: REGION,
+          handleMessage: async () => null,
+          sqs,
+          strictReturn: false,
+        });
+
+        consumer.start();
+        await pEvent(consumer, "response_processed");
+        consumer.stop();
+
+        sandbox.assert.callCount(sqs.send, 1);
+        sandbox.assert.calledWithMatch(sqs.send.firstCall, mockReceiveMessage);
+        sandbox.assert.neverCalledWithMatch(sqs.send, mockDeleteMessage);
+      });
+
+      it("works normally when strictReturn is disabled and handleMessageBatch returns null", async () => {
+        consumer = new Consumer({
+          queueUrl: QUEUE_URL,
+          region: REGION,
+          handleMessageBatch: async () => null,
+          batchSize: 2,
+          sqs,
+          strictReturn: false,
+        });
+
+        consumer.start();
+        await pEvent(consumer, "response_processed");
+        consumer.stop();
+
+        sandbox.assert.callCount(sqs.send, 1);
+        sandbox.assert.calledWithMatch(sqs.send.firstCall, mockReceiveMessage);
+        sandbox.assert.neverCalledWithMatch(sqs.send, mockDeleteMessageBatch);
+      });
+    });
+
     it("uses the correct visibility timeout for long running handler functions", async () => {
       consumer = new Consumer({
         queueUrl: QUEUE_URL,
         region: REGION,
         handleMessage: () =>
-          new Promise((resolve) => setTimeout(resolve, 75000)),
+          new Promise((resolve) => setTimeout(() => resolve(undefined), 75000)),
         sqs,
         visibilityTimeout: 40,
         heartbeatInterval: 30,
@@ -1575,7 +1759,7 @@ describe("Consumer", () => {
         queueUrl: QUEUE_URL,
         region: REGION,
         handleMessageBatch: () =>
-          new Promise((resolve) => setTimeout(resolve, 75000)),
+          new Promise((resolve) => setTimeout(() => resolve(undefined), 75000)),
         batchSize: 3,
         sqs,
         visibilityTimeout: 40,
@@ -1657,7 +1841,7 @@ describe("Consumer", () => {
         queueUrl: QUEUE_URL,
         region: REGION,
         handleMessage: () =>
-          new Promise((resolve) => setTimeout(resolve, 75000)),
+          new Promise((resolve) => setTimeout(() => resolve(undefined), 75000)),
         sqs,
         visibilityTimeout: 40,
         heartbeatInterval: 30,
@@ -1690,7 +1874,7 @@ describe("Consumer", () => {
         queueUrl: QUEUE_URL,
         region: REGION,
         handleMessageBatch: () =>
-          new Promise((resolve) => setTimeout(resolve, 75000)),
+          new Promise((resolve) => setTimeout(() => resolve(undefined), 75000)),
         sqs,
         batchSize: 2,
         visibilityTimeout: 40,
@@ -1719,7 +1903,7 @@ describe("Consumer", () => {
         queueUrl: QUEUE_URL,
         region: REGION,
         handleMessage: () =>
-          new Promise((resolve) => setTimeout(resolve, 1000)),
+          new Promise((resolve) => setTimeout(() => resolve(undefined), 1000)),
         handleMessageTimeout,
         sqs,
         authenticationErrorTimeout: AUTHENTICATION_ERROR_TIMEOUT,
@@ -1769,7 +1953,7 @@ describe("Consumer", () => {
       assert.ok(err);
       assert.equal(
         err.message,
-        "Unexpected message handler failure: Batch processing error",
+        "Unexpected message batch handler failure: Batch processing error",
       );
       assert.deepEqual(err.messageIds, ["1", "2"]);
     });
@@ -1778,7 +1962,7 @@ describe("Consumer", () => {
       const deleteErr = new Error("Delete error");
       deleteErr.name = "SQSError";
 
-      handleMessage.resolves(null);
+      handleMessage.resolves(response.Messages[0]);
       sqs.send.withArgs(mockDeleteMessage).rejects(deleteErr);
 
       consumer.start();
@@ -1804,7 +1988,7 @@ describe("Consumer", () => {
         queueUrl: QUEUE_URL,
         region: REGION,
         handleMessage: () =>
-          new Promise((resolve) => setTimeout(resolve, 75000)),
+          new Promise((resolve) => setTimeout(() => resolve(undefined), 75000)),
         sqs,
         visibilityTimeout: 40,
         heartbeatInterval: 30,
@@ -1838,7 +2022,7 @@ describe("Consumer", () => {
         queueUrl: QUEUE_URL,
         region: REGION,
         handleMessageBatch: () =>
-          new Promise((resolve) => setTimeout(resolve, 75000)),
+          new Promise((resolve) => setTimeout(() => resolve(undefined), 75000)),
         sqs,
         batchSize: 2,
         visibilityTimeout: 40,
@@ -2230,7 +2414,8 @@ describe("Consumer", () => {
       consumer = new Consumer({
         queueUrl: QUEUE_URL,
         region: REGION,
-        handleMessage: () => new Promise((resolve) => setTimeout(resolve, 20)),
+        handleMessage: () =>
+          new Promise((resolve) => setTimeout(() => resolve(undefined), 20)),
         sqs,
       });
 

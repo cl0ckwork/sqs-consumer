@@ -60,17 +60,23 @@ app.on("processing_error", (err) => {
 app.start();
 ```
 
-- The queue is polled continuously for messages using [long polling](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-long-polling.html).
-- Throwing an error (or returning a rejected promise) from the handler function will cause the message to be left on the queue. An [SQS redrive policy](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/SQSDeadLetterQueue.html) can be used to move messages that cannot be processed to a dead letter queue.
-- By default messages are processed one at a time – a new message won't be received until the first one has been processed. To process messages concurrently, you have two options:
+- **Polling Behavior**: The queue is polled continuously for messages using [long polling](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-long-polling.html).
+- **Message Processing Behavior**: By default messages are processed one at a time – a new message won't be received until the first one has been processed. To process messages concurrently, you have two options:
   - **Legacy Mode**: Use `batchSize` with `handleMessage` (Promise.all) or `handleMessageBatch` (batch processing) [detailed here](https://bbc.github.io/sqs-consumer/interfaces/ConsumerOptions.html#batchSize)
   - **FastQ Mode** (Recommended): Use `processConcurrentMessages: true` and `concurrency` for controlled concurrent processing (see [Concurrent Message Processing](#concurrent-message-processing) section below)
   - It's also important to await any processing that you are doing to ensure that messages are processed one at a time.
-- By default, messages that are sent to the `handleMessage` and `handleMessageBatch` functions will be considered as processed if they return without an error.
-  - To acknowledge individual messages, please return the message that you want to acknowledge if you are using `handleMessage` or the messages for `handleMessageBatch`.
-    - To note, returning an empty object or an empty array will be considered an acknowledgement of no message(s) and will result in no messages being deleted. If you would like to change this behaviour, please use the `alwaysAcknowledge` option [detailed here](https://bbc.github.io/sqs-consumer/interfaces/ConsumerOptions.html).
-    - By default, if an object or an array is not returned, all messages will be acknowledged.
-- Messages are deleted from the queue once the handler function has completed successfully (the above items should also be taken into account).
+- **Message Acknowledgment Behavior**:
+  - When `alwaysAcknowledge` is `false` (the default)
+    - **Returning `undefined`, an empty object `{}`, or an empty array `[]`**: Message(s) will **NOT** be deleted (left on queue for retry)
+      - For batch processing, return `undefined` or `[]` to prevent acknowledgment of all messages.
+      - For single message handling, return `undefined` or `{}` to prevent acknowledgment.
+    - **Returning the message object (or an array of messages in batch processing)**: Message(s) will be **acknowledged and deleted**
+      - Important: Only the message id(s) that are returned will be deleted.
+    - **Returning `void` is discouraged and will be deprecated in a future release.**
+    - **When `strictReturn` is `true`:** Returning `null` will throw an error. This will be the default behavior in a future release.
+  - **When `alwaysAcknowledge` is `true`:** All messages will be acknowledged and deleted regardless of return value.
+- **Error Handling**: Throwing an error (or returning a rejected promise) from the handler function will cause the message to be left on the queue. An [SQS redrive policy](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/SQSDeadLetterQueue.html) can be used to move messages that cannot be processed to a dead letter queue.
+- **Deletion Process** Messages are deleted from the queue once the handler function has completed successfully (the above items should also be taken into account).
 
 ### Concurrent Message Processing
 
@@ -370,6 +376,50 @@ Stop polling the queue for messages. [You can find the options definition here](
 By default, the value of `abort` is set to `false` which means pre existing requests to AWS SQS will still be made until they have concluded. If you would like to abort these requests instead, pass the abort value as `true`, like so:
 
 `consumer.stop({ abort: true })`
+
+#### Graceful shutdowns
+
+Calling `consumer.stop()` on its own only prevents new polls from being scheduled. The consumer will emit `stopped` immediately, even if the current long poll or message handler is still running. To wait for the final poll plus any in-flight message processing to finish, set `pollingCompleteWaitTimeMs` to the maximum amount of time you are willing to wait.
+
+- While waiting, the consumer emits `waiting_for_polling_to_complete` every second.
+- If the timeout elapses first, `waiting_for_polling_to_complete_timeout_exceeded` fires right before `stopped`.
+- For graceful shutdowns keep `abort: false` (the default). Passing `abort: true` cancels the shared `AbortController`, which halts heartbeat extensions and prevents acknowledgements/deletions from finishing.
+
+Here's an example of a graceful shutdown implementation:
+
+```js
+const consumer = Consumer.create({
+  queueUrl: "https://sqs.eu-west-1.amazonaws.com/account-id/queue-name",
+  handleMessage: async (message) => {
+    await doWork(message);
+    return message;
+  },
+  pollingCompleteWaitTimeMs: 10_000, // This will allow up to 10s for the last poll + handler
+});
+
+const shutdown = (signal) => {
+  console.log(`Received ${signal}, waiting for in-flight work...`);
+  consumer.stop();
+
+  consumer.once("waiting_for_polling_to_complete", () => {
+    console.log("Still processing in-flight messages...");
+  });
+
+  consumer.once("waiting_for_polling_to_complete_timeout_exceeded", () => {
+    console.warn("Graceful shutdown timed out, continuing shutdown anyway.");
+  });
+
+  consumer.once("stopped", () => {
+    console.log("Consumer stopped cleanly");
+    process.exit(0);
+  });
+};
+
+process.once("SIGINT", shutdown);
+process.once("SIGTERM", shutdown);
+
+consumer.start();
+```
 
 ### `consumer.status`
 

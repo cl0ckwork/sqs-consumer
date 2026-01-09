@@ -126,10 +126,17 @@ interface BaseConsumerOptions {
    * An `async` function (or function that returns a `Promise`) to be called whenever
    * a message is received.
    *
-   * In the case that you need to acknowledge the message, return an object containing
-   * the MessageId that you'd like to acknowledge.
+   * **Message Acknowledgment Behavior:**
+   * - Returning `undefined` will **NOT acknowledge** the message (leaves it on queue for retry)
+   * - Returning the original message or a processed message will cause the message to be **acknowledged and deleted**
+   * - To **explicitly acknowledge** a specific message, return an object containing the MessageId you want to acknowledge
+   *
+   * **Important:** If `alwaysAcknowledge` is `true`, all messages will be acknowledged regardless of return value.
+   *
+   * @remarks
+   * Returning `void` is discouraged and will be deprecated in a future release. Please return a Message or `undefined`.
    */
-  handleMessage?(message: Message): Promise<Message | void>;
+  handleMessage?(message: Message): Promise<Message | undefined>;
   /**
    * An `async` function (or function that returns a `Promise`) to be called whenever
    * a batch of messages is received. Similar to `handleMessage` but will receive the
@@ -137,10 +144,18 @@ interface BaseConsumerOptions {
    *
    * **If both are set, `handleMessageBatch` overrides `handleMessage`**.
    *
-   * In the case that you need to ack only some of the messages, return an array with
-   * the successful messages only.
+   * **Message Acknowledgment Behavior:**
+   * - Returning `undefined` will **NOT acknowledge** any messages (leaves them on queue for retry)
+   * - Returning the original message array or a processed array will cause **all messages to be acknowledged and deleted**
+   * - To **prevent acknowledgment** of all messages, return `undefined` or an empty array `[]`
+   * - To **selectively acknowledge** messages, return an array containing only the messages you want to acknowledge
+   *
+   * **Important:** If `alwaysAcknowledge` is `true`, all messages will be acknowledged regardless of return value.
+   *
+   * @remarks
+   * Returning `void` is discouraged and will be deprecated in a future release. Please return an array of Messages or `undefined`.
    */
-  handleMessageBatch?(messages: Message[]): Promise<Message[] | void>;
+  handleMessageBatch?(messages: Message[]): Promise<Message[] | undefined>;
   /**
    * An `async` function (or function that returns a `Promise`) to be called right
    * before the SQS Client sends a receive message command.
@@ -167,6 +182,16 @@ interface BaseConsumerOptions {
    * @defaultvalue `false`
    */
   suppressFifoWarning?: boolean;
+  /**
+   * Set this to `true` if you want to enforce that message handlers must return a value.
+   * When enabled, handlers that return `null` will throw an error instead of treating it
+   * as "do not acknowledge".
+   * @defaultvalue `false`
+   *
+   * @remarks
+   * This option will be turned on by default in a future release.
+   */
+  strictReturn?: boolean;
 }
 
 /**
